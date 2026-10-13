@@ -139,6 +139,6 @@ app.use('/api', (req,res)=>fail(res,404,'API endpoint not found.'));
 app.use(express.static(path.join(__dirname,'..','public'), { extensions:['html'], maxAge:process.env.NODE_ENV==='production'?'1h':0, etag:true }));
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'..','public','index.html')));
 app.use((err,req,res,next)=>{console.error(JSON.stringify({level:'error',requestId:req.requestId,message:err.message,stack:process.env.NODE_ENV==='production'?undefined:err.stack}));if(res.headersSent)return next(err);const status=err.status|| (err.code==='ER_DUP_ENTRY'?409:err.message==='Origin not allowed'?403:500);res.status(status).json({error:status>=500?'An unexpected server error occurred.':err.message,requestId:req.requestId});});
-const server=app.listen(PORT,()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development'})));
+const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development'})));
 async function shutdown(signal){console.log(`${signal} received; shutting down`);server.close(async()=>{await pool.end();process.exit(0);});setTimeout(()=>process.exit(1),10000).unref();}
 process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
