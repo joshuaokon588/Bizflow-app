@@ -9,6 +9,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 
 const required = ['JWT_SECRET','DB_HOST','DB_NAME','DB_USER','DB_PASSWORD'];
 for (const key of required) if (!process.env[key] || process.env[key].startsWith('REPLACE_')) {
@@ -28,11 +29,11 @@ const pool = mysql.createPool({
 });
 const allowedOrigins = (process.env.APP_ORIGIN || `http://localhost:${PORT}`).split(',').map(x => x.trim());
 app.disable('x-powered-by');
-app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
+app.set('trust proxy', process.env.TRUST_PROXY === 'true'? 1 : false);
 app.use(helmet({ contentSecurityPolicy: { directives: {
   defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
   imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"], objectSrc: ["'none'"],
-  upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null
+  upgradeInsecureRequests: process.env.NODE_ENV === 'production'? [] : null
 }}}));
 app.use(cors({ origin(origin, cb) { if (!origin || allowedOrigins.includes(origin)) return cb(null, true); return cb(new Error('Origin not allowed')); }, methods: ['GET','POST','PATCH','DELETE'], allowedHeaders: ['Content-Type','Authorization'], maxAge: 600 }));
 app.use(express.json({ limit: '100kb', strict: true }));
@@ -47,39 +48,39 @@ const apiLimiter = rateLimit({ windowMs: 60*1000, limit: 120, standardHeaders: '
 app.use('/api', apiLimiter);
 const asyncRoute = fn => (req,res,next) => Promise.resolve(fn(req,res,next)).catch(next);
 const fail = (res,status,error) => res.status(status).json({ error });
-const clean = v => typeof v === 'string' ? v.trim() : v;
+const clean = v => typeof v === 'string'? v.trim() : v;
 const validEmail = v => typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) && v.length <= 190;
 const positiveInt = v => Number.isInteger(Number(v)) && Number(v) > 0;
 const nonnegativeMoney = v => Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 999999999999;
 const money = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 async function audit(userId, action, entityType, entityId, req, metadata={}) {
-  try { await pool.execute('INSERT INTO audit_logs (user_id,action,entity_type,entity_id,ip_address,metadata) VALUES (?,?,?,?,?,?)', [userId || null, action, entityType, entityId == null ? null : String(entityId), req.ip, JSON.stringify(metadata)]); }
+  try { await pool.execute('INSERT INTO audit_logs (user_id,action,entity_type,entity_id,ip_address,metadata) VALUES (?,?,?,?,?,?)', [userId || null, action, entityType, entityId == null? null : String(entityId), req.ip, JSON.stringify(metadata)]); }
   catch (e) { console.error(JSON.stringify({level:'error',message:'audit_write_failed',requestId:req.requestId,error:e.message})); }
 }
 function auth(req,res,next) {
-  const header = req.headers.authorization || ''; const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const header = req.headers.authorization || ''; const token = header.startsWith('Bearer ')? header.slice(7) : '';
   if (!token) return fail(res,401,'Authentication required.');
   try { req.user = jwt.verify(token, process.env.JWT_SECRET, { algorithms:['HS256'], issuer:'bizflow-api', audience:'bizflow-client' }); next(); }
   catch { return fail(res,401,'Session is invalid or expired. Please sign in again.'); }
 }
-const roles = (...allowed) => (req,res,next) => allowed.includes(req.user.role) ? next() : fail(res,403,'You do not have permission to perform this action.');
+const roles = (...allowed) => (req,res,next) => allowed.includes(req.user.role)? next() : fail(res,403,'You do not have permission to perform this action.');
 app.get('/api/health', asyncRoute(async (req,res) => {
   try { await pool.query('SELECT 1'); res.json({ status:'ok', database:'connected', timestamp:new Date().toISOString(), requestId:req.requestId }); }
   catch { res.status(503).json({ status:'degraded', database:'unavailable', requestId:req.requestId }); }
 }));
 app.post('/api/auth/login', loginLimiter, asyncRoute(async (req,res) => {
   const email = String(req.body.email || '').trim().toLowerCase(); const password = req.body.password;
-  if (!validEmail(email) || typeof password !== 'string' || password.length < 1 || password.length > 200) return fail(res,400,'Enter a valid email and password.');
+  if (!validEmail(email) || typeof password!== 'string' || password.length < 1 || password.length > 200) return fail(res,400,'Enter a valid email and password.');
   const [rows] = await pool.execute('SELECT id,name,email,password_hash,role,is_active FROM users WHERE email=? LIMIT 1',[email]);
-  const user = rows[0]; const matches = user ? await bcrypt.compare(password,user.password_hash) : await bcrypt.compare(password,'$2a$10$abcdefghijklmnopqrstuuD6F6zqv4X6F0KQ5bJ2m1oW');
-  if (!user || !matches || !user.is_active) { await audit(user?.id,'login_failed','user',user?.id,req,{email}); return fail(res,401,'Email or password is incorrect.'); }
+  const user = rows[0]; const matches = user? await bcrypt.compare(password,user.password_hash) : await bcrypt.compare(password,'$2a$10$abcdefghijklmnopqrstuuD6F6zqv4X6F0KQ5bJ2m1oW');
+  if (!user ||!matches ||!user.is_active) { await audit(user?.id,'login_failed','user',user?.id,req,{email}); return fail(res,401,'Email or password is incorrect.'); }
   const token = jwt.sign({ sub:String(user.id), name:user.name, email:user.email, role:user.role }, process.env.JWT_SECRET, { algorithm:'HS256', expiresIn:process.env.JWT_EXPIRES_IN || '30m', issuer:'bizflow-api', audience:'bizflow-client' });
   await pool.execute('UPDATE users SET last_login_at=NOW() WHERE id=?',[user.id]); await audit(user.id,'login_success','user',user.id,req);
   res.json({ token, expiresIn:process.env.JWT_EXPIRES_IN || '30m', user:{id:user.id,name:user.name,email:user.email,role:user.role} });
 }));
 app.get('/api/auth/me', auth, asyncRoute(async (req,res) => {
   const [rows] = await pool.execute('SELECT id,name,email,role,is_active FROM users WHERE id=?',[req.user.sub]);
-  if (!rows[0] || !rows[0].is_active) return fail(res,401,'Account is unavailable.');
+  if (!rows[0] ||!rows[0].is_active) return fail(res,401,'Account is unavailable.');
   res.json({ user:rows[0] });
 }));
 app.post('/api/auth/logout', auth, asyncRoute(async (req,res) => { await audit(req.user.sub,'logout','user',req.user.sub,req); res.json({message:'Signed out. Discard the token on this device.'}); }));
@@ -91,11 +92,11 @@ app.get('/api/dashboard', auth, asyncRoute(async (req,res) => {
   const [recentSales] = await pool.query('SELECT s.id,s.sale_number,s.total,s.payment_method,s.created_at,c.name customer_name FROM sales s LEFT JOIN customers c ON c.id=s.customer_id ORDER BY s.created_at DESC LIMIT 6');
   res.json({ metrics:{...p,...c,...s,...e, netBeforeOtherCosts:money(s.salesTotal-e.expensesTotal)}, recentSales });
 }));
-app.get('/api/customers', auth, asyncRoute(async (req,res) => { const q = String(req.query.q || '').trim().slice(0,100); const [rows] = q ? await pool.execute('SELECT id,name,email,phone,company,notes,created_at FROM customers WHERE name LIKE ? OR email LIKE ? OR company LIKE ? ORDER BY created_at DESC LIMIT 200',[`%${q}%`,`%${q}%`,`%${q}%`]) : await pool.query('SELECT id,name,email,phone,company,notes,created_at FROM customers ORDER BY created_at DESC LIMIT 200'); res.json({customers:rows}); }));
+app.get('/api/customers', auth, asyncRoute(async (req,res) => { const q = String(req.query.q || '').trim().slice(0,100); const [rows] = q? await pool.execute('SELECT id,name,email,phone,company,notes,created_at FROM customers WHERE name LIKE? OR email LIKE? OR company LIKE? ORDER BY created_at DESC LIMIT 200',[`%${q}%`,`%${q}%`,`%${q}%`]) : await pool.query('SELECT id,name,email,phone,company,notes,created_at FROM customers ORDER BY created_at DESC LIMIT 200'); res.json({customers:rows}); }));
 app.post('/api/customers', auth, roles('admin','manager','staff'), asyncRoute(async (req,res) => {
   const name=clean(req.body.name), email=clean(req.body.email||'')||null, phone=clean(req.body.phone||'')||null, company=clean(req.body.company||'')||null, notes=clean(req.body.notes||'')||null;
   if (typeof name!=='string'||name.length<2||name.length>160) return fail(res,400,'Customer name must be 2–160 characters.');
-  if (email && !validEmail(email)) return fail(res,400,'Enter a valid email address.');
+  if (email &&!validEmail(email)) return fail(res,400,'Enter a valid email address.');
   if ([phone,company].some(v=>v && (typeof v!=='string'||v.length>160)) || (notes && (typeof notes!=='string'||notes.length>2000))) return fail(res,400,'One or more fields are too long.');
   const [r]=await pool.execute('INSERT INTO customers(name,email,phone,company,notes,created_by) VALUES(?,?,?,?,?,?)',[name,email,phone,company,notes,req.user.sub]); await audit(req.user.sub,'customer_created','customer',r.insertId,req); res.status(201).json({id:r.insertId,message:'Customer created.'});
 }));
@@ -106,7 +107,7 @@ app.patch('/api/customers/:id', auth, roles('admin','manager'), asyncRoute(async
   if(!sets.length)return fail(res,400,'No valid fields provided.'); vals.push(req.params.id); const [r]=await pool.execute(`UPDATE customers SET ${sets.join(',')} WHERE id=?`,vals); if(!r.affectedRows)return fail(res,404,'Customer not found.'); await audit(req.user.sub,'customer_updated','customer',req.params.id,req); res.json({message:'Customer updated.'});
 }));
 app.delete('/api/customers/:id', auth, roles('admin','manager'), asyncRoute(async (req,res) => { if(!positiveInt(req.params.id))return fail(res,400,'Invalid customer ID.'); const [r]=await pool.execute('DELETE FROM customers WHERE id=?',[req.params.id]); if(!r.affectedRows)return fail(res,404,'Customer not found.'); await audit(req.user.sub,'customer_deleted','customer',req.params.id,req); res.json({message:'Customer deleted.'}); }));
-app.get('/api/products', auth, asyncRoute(async (req,res) => { const q=String(req.query.q||'').trim().slice(0,100); const [rows]=q?await pool.execute('SELECT id,sku,name,description,price,stock,low_stock_threshold,is_active,created_at FROM products WHERE is_active=1 AND (name LIKE ? OR sku LIKE ?) ORDER BY name LIMIT 300',[`%${q}%`,`%${q}%`]):await pool.query('SELECT id,sku,name,description,price,stock,low_stock_threshold,is_active,created_at FROM products WHERE is_active=1 ORDER BY name LIMIT 300');res.json({products:rows}); }));
+app.get('/api/products', auth, asyncRoute(async (req,res) => { const q=String(req.query.q||'').trim().slice(0,100); const [rows]=q?await pool.execute('SELECT id,sku,name,description,price,stock,low_stock_threshold,is_active,created_at FROM products WHERE is_active=1 AND (name LIKE? OR sku LIKE?) ORDER BY name LIMIT 300',[`%${q}%`,`%${q}%`]):await pool.query('SELECT id,sku,name,description,price,stock,low_stock_threshold,is_active,created_at FROM products WHERE is_active=1 ORDER BY name LIMIT 300');res.json({products:rows}); }));
 app.post('/api/products', auth, roles('admin','manager'), asyncRoute(async (req,res) => {
   const sku=clean(req.body.sku),name=clean(req.body.name),description=clean(req.body.description||'')||null,price=Number(req.body.price),stock=Number(req.body.stock),threshold=Number(req.body.low_stock_threshold??5);
   if(typeof sku!=='string'||sku.length<1||sku.length>80||typeof name!=='string'||name.length<2||name.length>160)return fail(res,400,'SKU and product name are required.');
@@ -136,8 +137,10 @@ app.get('/api/expenses', auth, asyncRoute(async (req,res)=>{const [rows]=await p
 app.post('/api/expenses', auth, roles('admin','manager'), asyncRoute(async (req,res)=>{const category=clean(req.body.category),description=clean(req.body.description),amount=Number(req.body.amount),date=String(req.body.expense_date||new Date().toISOString().slice(0,10));if(typeof category!=='string'||!category||category.length>100||typeof description!=='string'||description.length<2||description.length>255)return fail(res,400,'Enter a category and description.');if(!Number.isFinite(amount)||amount<=0||amount>999999999999)return fail(res,400,'Expense amount must be greater than zero.');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(`${date}T00:00:00Z`)))return fail(res,400,'Use a valid expense date (YYYY-MM-DD).');const [r]=await pool.execute('INSERT INTO expenses(category,description,amount,expense_date,created_by) VALUES(?,?,?,?,?)',[category,description,amount,date,req.user.sub]);await audit(req.user.sub,'expense_created','expense',r.insertId,req,{amount});res.status(201).json({id:r.insertId,message:'Expense recorded.'});}));
 app.get('/api/audit-logs', auth, roles('admin'), asyncRoute(async (req,res)=>{const [rows]=await pool.query('SELECT a.id,a.action,a.entity_type,a.entity_id,a.ip_address,a.metadata,a.created_at,u.name user_name,u.email user_email FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 200');res.json({logs:rows});}));
 app.use('/api', (req,res)=>fail(res,404,'API endpoint not found.'));
-app.use(express.static(path.join(__dirname,'..','public'), { extensions:['html'], maxAge:process.env.NODE_ENV==='production'?'1h':0, etag:true }));
-app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'..','public','index.html')));
+
+// FIXED: Only serve public folder if it exists, otherwise return API status
+app.get('/', (req,res)=> res.json({ status:'BizFlow API is running', message:'Backend live', health:'/api/health', timestamp: new Date().toISOString() }));
+
 app.use((err,req,res,next)=>{console.error(JSON.stringify({level:'error',requestId:req.requestId,message:err.message,stack:process.env.NODE_ENV==='production'?undefined:err.stack}));if(res.headersSent)return next(err);const status=err.status|| (err.code==='ER_DUP_ENTRY'?409:err.message==='Origin not allowed'?403:500);res.status(status).json({error:status>=500?'An unexpected server error occurred.':err.message,requestId:req.requestId});});
 const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development'})));
 async function shutdown(signal){console.log(`${signal} received; shutting down`);server.close(async()=>{await pool.end();process.exit(0);});setTimeout(()=>process.exit(1),10000).unref();}
