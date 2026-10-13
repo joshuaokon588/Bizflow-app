@@ -27,35 +27,16 @@ const pool = mysql.createPool({
   waitForConnections: true, connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
   queueLimit: 0, enableKeepAlive: true, decimalNumbers: true, charset: 'utf8mb4'
 });
-const allowedOrigins = (process.env.APP_ORIGIN || `http://localhost:${PORT}`).split(',').map(x => x.trim());
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true'? 1 : false);
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: { directives: {
+  defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+  imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"], objectSrc: ["'none'"],
+  upgradeInsecureRequests: process.env.NODE_ENV === 'production'? [] : null
+}}}));
 app.use(cors({ origin: true, credentials: true, methods: ['GET','POST','PATCH','DELETE'], allowedHeaders: ['Content-Type','Authorization'], maxAge: 600 }));
 app.use(express.json({ limit: '100kb', strict: true }));
 app.use(express.urlencoded({ extended: false, limit: '20kb' }));
-
-// --- ADDED: SERVE FRONTEND FOR EXTERNAL USERS ---
-const possiblePublicPaths = [
-  path.join(__dirname, 'public'),
-  path.join(__dirname, '../public'),
-  path.join(__dirname, '../client'),
-  path.join(__dirname, 'client/dist'),
-  path.join(process.cwd(), 'public')
-];
-let publicPath = null;
-for (const p of possiblePublicPaths) {
-  if (fs.existsSync(p) && fs.existsSync(path.join(p, 'index.html'))) {
-    publicPath = p;
-    break;
-  }
-}
-if (publicPath) {
-  console.log(`Serving frontend from: ${publicPath}`);
-  app.use(express.static(publicPath));
-}
-// --- END ADDED ---
-
 app.use((req,res,next) => {
   req.requestId = crypto.randomUUID(); res.setHeader('X-Request-Id', req.requestId);
   const start = Date.now(); res.on('finish', () => console.log(JSON.stringify({ level:'info', requestId:req.requestId, method:req.method, path:req.path, status:res.statusCode, durationMs:Date.now()-start, ip:req.ip })));
@@ -155,23 +136,8 @@ app.get('/api/expenses', auth, asyncRoute(async (req,res)=>{const [rows]=await p
 app.post('/api/expenses', auth, roles('admin','manager'), asyncRoute(async (req,res)=>{const category=clean(req.body.category),description=clean(req.body.description),amount=Number(req.body.amount),date=String(req.body.expense_date||new Date().toISOString().slice(0,10));if(typeof category!=='string'||!category||category.length>100||typeof description!=='string'||description.length<2||description.length>255)return fail(res,400,'Enter a category and description.');if(!Number.isFinite(amount)||amount<=0||amount>999999999999)return fail(res,400,'Expense amount must be greater than zero.');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(`${date}T00:00:00Z`)))return fail(res,400,'Use a valid expense date (YYYY-MM-DD).');const [r]=await pool.execute('INSERT INTO expenses(category,description,amount,expense_date,created_by) VALUES(?,?,?,?,?)',[category,description,amount,date,req.user.sub]);await audit(req.user.sub,'expense_created','expense',r.insertId,req,{amount});res.status(201).json({id:r.insertId,message:'Expense recorded.'});}));
 app.get('/api/audit-logs', auth, roles('admin'), asyncRoute(async (req,res)=>{const [rows]=await pool.query('SELECT a.id,a.action,a.entity_type,a.entity_id,a.ip_address,a.metadata,a.created_at,u.name user_name,u.email user_email FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 200');res.json({logs:rows});}));
 app.use('/api', (req,res)=>fail(res,404,'API endpoint not found.'));
-
-// --- SERVE FRONTEND ---
-app.get('/', (req,res)=> {
-  if (publicPath) {
-    return res.sendFile(path.join(publicPath, 'index.html'));
-  }
-  res.json({ status:'BizFlow API is running', message:'Backend live', health:'/api/health', timestamp: new Date().toISOString() });
-});
-
-if (publicPath) {
-  app.get('*', (req,res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    res.sendFile(path.join(publicPath, 'index.html'));
-  });
-}
-
+app.get('/', (req,res)=> res.json({ status:'BizFlow API is running', message:'Backend live', health:'/api/health', timestamp: new Date().toISOString() }));
 app.use((err,req,res,next)=>{console.error(JSON.stringify({level:'error',requestId:req.requestId,message:err.message,stack:process.env.NODE_ENV==='production'?undefined:err.stack}));if(res.headersSent)return next(err);const status=err.status|| (err.code==='ER_DUP_ENTRY'?409:err.message==='Origin not allowed'?403:500);res.status(status).json({error:status>=500?'An unexpected server error occurred.':err.message,requestId:req.requestId});});
-const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development', frontend: publicPath || 'API only'})));
+const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development'})));
 async function shutdown(signal){console.log(`${signal} received; shutting down`);server.close(async()=>{await pool.end();process.exit(0);});setTimeout(()=>process.exit(1),10000).unref();}
 process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
