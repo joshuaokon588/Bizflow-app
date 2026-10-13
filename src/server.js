@@ -30,14 +30,32 @@ const pool = mysql.createPool({
 const allowedOrigins = (process.env.APP_ORIGIN || `http://localhost:${PORT}`).split(',').map(x => x.trim());
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true'? 1 : false);
-app.use(helmet({ contentSecurityPolicy: { directives: {
-  defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
-  imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"], objectSrc: ["'none'"],
-  upgradeInsecureRequests: process.env.NODE_ENV === 'production'? [] : null
-}}}));
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin(origin, cb) { if (!origin || allowedOrigins.includes(origin)) return cb(null, true); return cb(new Error('Origin not allowed')); }, methods: ['GET','POST','PATCH','DELETE'], allowedHeaders: ['Content-Type','Authorization'], maxAge: 600 }));
 app.use(express.json({ limit: '100kb', strict: true }));
 app.use(express.urlencoded({ extended: false, limit: '20kb' }));
+
+// --- ADDED: SERVE FRONTEND FOR EXTERNAL USERS ---
+const possiblePublicPaths = [
+  path.join(__dirname, 'public'),
+  path.join(__dirname, '../public'),
+  path.join(__dirname, '../client'),
+  path.join(__dirname, 'client/dist'),
+  path.join(process.cwd(), 'public')
+];
+let publicPath = null;
+for (const p of possiblePublicPaths) {
+  if (fs.existsSync(p) && fs.existsSync(path.join(p, 'index.html'))) {
+    publicPath = p;
+    break;
+  }
+}
+if (publicPath) {
+  console.log(`Serving frontend from: ${publicPath}`);
+  app.use(express.static(publicPath));
+}
+// --- END ADDED ---
+
 app.use((req,res,next) => {
   req.requestId = crypto.randomUUID(); res.setHeader('X-Request-Id', req.requestId);
   const start = Date.now(); res.on('finish', () => console.log(JSON.stringify({ level:'info', requestId:req.requestId, method:req.method, path:req.path, status:res.statusCode, durationMs:Date.now()-start, ip:req.ip })));
@@ -138,10 +156,22 @@ app.post('/api/expenses', auth, roles('admin','manager'), asyncRoute(async (req,
 app.get('/api/audit-logs', auth, roles('admin'), asyncRoute(async (req,res)=>{const [rows]=await pool.query('SELECT a.id,a.action,a.entity_type,a.entity_id,a.ip_address,a.metadata,a.created_at,u.name user_name,u.email user_email FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 200');res.json({logs:rows});}));
 app.use('/api', (req,res)=>fail(res,404,'API endpoint not found.'));
 
-// FIXED: Only serve public folder if it exists, otherwise return API status
-app.get('/', (req,res)=> res.json({ status:'BizFlow API is running', message:'Backend live', health:'/api/health', timestamp: new Date().toISOString() }));
+// --- SERVE FRONTEND ---
+app.get('/', (req,res)=> {
+  if (publicPath) {
+    return res.sendFile(path.join(publicPath, 'index.html'));
+  }
+  res.json({ status:'BizFlow API is running', message:'Backend live', health:'/api/health', timestamp: new Date().toISOString() });
+});
+
+if (publicPath) {
+  app.get('*', (req,res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(publicPath, 'index.html'));
+  });
+}
 
 app.use((err,req,res,next)=>{console.error(JSON.stringify({level:'error',requestId:req.requestId,message:err.message,stack:process.env.NODE_ENV==='production'?undefined:err.stack}));if(res.headersSent)return next(err);const status=err.status|| (err.code==='ER_DUP_ENTRY'?409:err.message==='Origin not allowed'?403:500);res.status(status).json({error:status>=500?'An unexpected server error occurred.':err.message,requestId:req.requestId});});
-const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development'})));
+const server=app.listen(PORT,'0.0.0.0',()=>console.log(JSON.stringify({level:'info',message:'BizFlow API started',port:PORT,env:process.env.NODE_ENV||'development', frontend: publicPath || 'API only'})));
 async function shutdown(signal){console.log(`${signal} received; shutting down`);server.close(async()=>{await pool.end();process.exit(0);});setTimeout(()=>process.exit(1),10000).unref();}
 process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
