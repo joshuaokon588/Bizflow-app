@@ -31,7 +31,7 @@ const allowedOrigins = (process.env.APP_ORIGIN || `http://localhost:${PORT}`).sp
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true'? 1 : false);
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin(origin, cb) { if (!origin || allowedOrigins.includes(origin)) return cb(null, true); return cb(new Error('Origin not allowed')); }, methods: ['GET','POST','PATCH','DELETE'], allowedHeaders: ['Content-Type','Authorization'], maxAge: 600 }));
+app.use(cors({ origin: true, credentials: true, methods: ['GET','POST','PATCH','DELETE'], allowedHeaders: ['Content-Type','Authorization'], maxAge: 600 }));
 app.use(express.json({ limit: '100kb', strict: true }));
 app.use(express.urlencoded({ extended: false, limit: '20kb' }));
 
